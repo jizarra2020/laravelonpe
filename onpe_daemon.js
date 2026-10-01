@@ -1,88 +1,8 @@
 import http from 'http';
-import puppeteer from 'puppeteer-core';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
+import puppeteer from 'puppeteer';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-function findChromeExecutable() {
-    if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
-        return process.env.CHROME_PATH;
-    }
-    if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
-        return process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
-
-    const platform = process.platform;
-    const candidates = [];
-
-    if (platform === 'win32') {
-        const localAppData = process.env.LOCALAPPDATA || '';
-        const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
-        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-
-        candidates.push(
-            path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-            path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-            path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-            path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-            path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
-        );
-    } else if (platform === 'linux') {
-        try {
-            const checkDirs = [
-                path.join(__dirname, '..', '..', '..', '..', 'storage', 'app', 'bin', 'chrome-portable'),
-                path.join(__dirname, '..', '..', '..', '..', 'chrome-bin')
-            ];
-            for (const rootDir of checkDirs) {
-                if (fs.existsSync(rootDir)) {
-                    const findInDir = (dir) => {
-                        const entries = fs.readdirSync(dir, { withFileTypes: true });
-                        for (const entry of entries) {
-                            const full = path.join(dir, entry.name);
-                            if (entry.isDirectory()) {
-                                const found = findInDir(full);
-                                if (found) return found;
-                            } else if (entry.name === 'chrome' && !entry.name.includes('.')) {
-                                return full;
-                            }
-                        }
-                        return null;
-                    };
-                    const found = findInDir(rootDir);
-                    if (found) candidates.push(found);
-                }
-            }
-        } catch (e) {}
-
-        candidates.push(
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-            '/snap/bin/chromium',
-            '/usr/bin/google-chrome-unstable'
-        );
-    } else if (platform === 'darwin') {
-        candidates.push(
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Chromium.app/Contents/MacOS/Chromium'
-        );
-    }
-
-    for (const p of candidates) {
-        if (p && fs.existsSync(p)) {
-            return p;
-        }
-    }
-
-    return platform === 'win32' ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
-}
-
-const chromePath = findChromeExecutable();
-const PORT = process.env.ONPE_DAEMON_PORT || 3199;
+const PORT = process.env.PORT || 10000;
+const HOST = '0.0.0.0';
 
 class DedicatedWarmedOnpeDaemon {
     constructor() {
@@ -91,54 +11,33 @@ class DedicatedWarmedOnpeDaemon {
         this.isReady = false;
         this.isInitializing = false;
         this.queue = Promise.resolve();
-        this.lastRefresh = 0;
-        this.queryCount = 0;
     }
 
     async init() {
         if (this.isInitializing) return;
         this.isInitializing = true;
         try {
-            console.log(`[ONPE Engine] Starting dedicated Chrome engine using: ${chromePath}...`);
+            console.log('[ONPE Service] Launching Chromium in Render...');
             this.browser = await puppeteer.launch({
-                executablePath: chromePath,
                 headless: 'new',
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-infobars',
+                    '--disable-dev-shm-usage',
                     '--disable-gpu',
-                    '--disable-software-rasterizer',
+                    '--disable-blink-features=AutomationControlled',
                     '--disable-extensions',
-                    '--disable-component-update',
-                    '--disable-background-networking',
-                    '--blink-settings=imagesEnabled=false',
-                    '--disable-remote-fonts',
-                    '--mute-audio',
                     '--no-first-run',
-                    '--no-default-browser-check',
                     '--window-size=1366,768'
-                ],
-                ignoreDefaultArgs: ['--enable-automation']
+                ]
             });
 
             await this.refreshWafSession();
-
             this.isReady = true;
             this.isInitializing = false;
-            console.log(`[ONPE Engine] READY on http://127.0.0.1:${PORT}`);
-
-            // Keep-alive every 2 minutes
-            setInterval(() => {
-                const now = Date.now();
-                if (now - this.lastRefresh > 120000 && this.isReady) {
-                    this.queue = this.queue.then(() => this.refreshWafSession().catch(() => {}));
-                }
-            }, 30000);
-
+            console.log(`[ONPE Service] READY on http://${HOST}:${PORT}`);
         } catch (e) {
-            console.error('[ONPE Engine] Init error:', e);
+            console.error('[ONPE Service] Init error:', e);
             this.isInitializing = false;
             this.isReady = false;
         }
@@ -155,7 +54,7 @@ class DedicatedWarmedOnpeDaemon {
             this.isInitializing = false;
             await this.init();
         } catch (e) {
-            console.error('[ONPE Engine] Browser restart error:', e);
+            console.error('[ONPE Service] Restart error:', e);
         }
     }
 
@@ -192,16 +91,14 @@ class DedicatedWarmedOnpeDaemon {
 
             await newPage.goto('https://consultaelectoral.onpe.gob.pe/inicio', {
                 waitUntil: 'networkidle2',
-                timeout: 15000
+                timeout: 25000
             });
-            await newPage.waitForFunction(() => typeof window.AwsWafIntegration !== 'undefined', { timeout: 5000 }).catch(() => {});
+            await newPage.waitForFunction(() => typeof window.AwsWafIntegration !== 'undefined', { timeout: 8000 }).catch(() => {});
             await new Promise(r => setTimeout(r, 600));
 
             this.page = newPage;
-            this.lastRefresh = Date.now();
-            this.queryCount = 0;
         } catch (e) {
-            console.error('[ONPE Engine] Session refresh warning:', e.message);
+            console.error('[ONPE Service] Session refresh warning:', e.message);
         }
     }
 
@@ -310,34 +207,30 @@ class DedicatedWarmedOnpeDaemon {
 
     async query(targetDni) {
         if (!this.isReady || !this.browser) {
-            return { success: false, error: 'Engine initializing' };
+            await this.init();
         }
 
         return new Promise((resolve) => {
             this.queue = this.queue.then(async () => {
                 try {
-                    this.queryCount++;
                     if (!this.page) {
                         await this.refreshWafSession();
                     }
 
                     let res = await this.executeQueryOnPage(targetDni);
 
-                    // Si falló por sesión WAF bloqueada/expirada, reiniciar y reintentar 1 vez
                     if (!res || (!res.success && res.retryable)) {
-                        console.log(`[ONPE Engine] Recycling session due to retryable response for ${targetDni}...`);
+                        console.log(`[ONPE Service] Recycling session for ${targetDni}...`);
                         await this.restartBrowser();
                         res = await this.executeQueryOnPage(targetDni);
                     }
 
-                    await new Promise(r => setTimeout(r, 40));
                     resolve(res);
                 } catch (e) {
                     resolve({ success: false, error: e.toString() });
                 }
             });
         });
-
     }
 }
 
@@ -357,10 +250,11 @@ const server = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://${req.headers.host}`);
 
-    if (url.pathname === '/health') {
+    if (url.pathname === '/' || url.pathname === '/health') {
         res.writeHead(200);
         res.end(JSON.stringify({ 
             status: daemon.isReady ? 'ready' : (daemon.isInitializing ? 'initializing' : 'stopped'),
+            service: 'ONPE Cloud API',
             uptime: Math.round(process.uptime())
         }));
         return;
@@ -385,7 +279,7 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
-server.listen(PORT, '127.0.0.1', async () => {
-    console.log(`[ONPE Engine] Listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, async () => {
+    console.log(`[ONPE Service] Listening on http://${HOST}:${PORT}`);
     await daemon.init();
 });
